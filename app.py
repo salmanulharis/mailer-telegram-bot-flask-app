@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import os
+
 from flask import Flask, request, abort
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -27,8 +29,19 @@ ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messa
 ptb_app.add_handler(CallbackQueryHandler(button_callback))
 
 
+def run_async(coro):
+    """Run an async coroutine safely from a sync Flask route."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 @flask_app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
-async def webhook():
+def webhook():
     """Receive updates from Telegram via webhook."""
     if request.content_type != "application/json":
         abort(415)
@@ -37,11 +50,12 @@ async def webhook():
     if not data:
         abort(400)
 
-    update = Update.de_json(data, ptb_app.bot)
+    async def process():
+        update = Update.de_json(data, ptb_app.bot)
+        async with ptb_app:
+            await ptb_app.process_update(update)
 
-    async with ptb_app:
-        await ptb_app.process_update(update)
-
+    run_async(process())
     return "OK", 200
 
 
